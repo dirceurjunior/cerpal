@@ -135,7 +135,7 @@ public class Contas implements Serializable {
         if (StringUtils.isNotBlank(filtro.getNc())) {
             criteria.add(Restrictions.eq("cadastro", filtro.getNc()));
         }
-        return criteria.addOrder(Order.desc("notaFiscal")).list();
+        return criteria.addOrder(Order.desc("id")).list();
     }
 
     public String removerCaracteres(String value) {

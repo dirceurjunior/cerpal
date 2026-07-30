@@ -16,6 +16,7 @@ import com.itextpdf.text.Rectangle;
 import com.itextpdf.text.pdf.ColumnText;
 import com.itextpdf.text.pdf.PRStream;
 import com.itextpdf.text.pdf.PdfContentByte;
+import com.itextpdf.text.pdf.PdfDocument;
 import com.itextpdf.text.pdf.PdfGState;
 import com.itextpdf.text.pdf.PdfName;
 import com.itextpdf.text.pdf.PdfNumber;
@@ -42,11 +43,14 @@ import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Scanner;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import javax.faces.context.FacesContext;
 import javax.faces.view.ViewScoped;
 import javax.imageio.ImageIO;
@@ -56,7 +60,6 @@ import javax.persistence.EntityManager;
 import javax.servlet.http.HttpServletResponse;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
-import org.apache.pdfbox.text.PDFTextStripperByArea;
 import org.primefaces.event.FileUploadEvent;
 import org.primefaces.model.DefaultStreamedContent;
 import org.primefaces.model.StreamedContent;
@@ -160,55 +163,148 @@ public class CadastroContaBean implements Serializable {
         //Cria um arquivo UploadFile, para receber o arquivo do evento
         //UploadedFile file = event.getFile();
         byte[] arquivo = compactarArquivo(event);
-        try ( PDDocument document = PDDocument.load(arquivo)) {
+        try (PDDocument document = PDDocument.load(arquivo)) {
             if (!document.isEncrypted()) {
-                PDFTextStripperByArea stripper = new PDFTextStripperByArea();
-                stripper.setSortByPosition(true);
                 PDFTextStripper tStripper = new PDFTextStripper();
                 String pdfFileInText = tStripper.getText(document);
-                String lines[] = pdfFileInText.split("\\r?\\n");
-                System.out.println("linha");
-                System.out.println(lines[4].substring(12, lines[4].length() - 17).trim());
-                conta.setNotaFiscal(lines[2].substring(lines[2].length() - 7, lines[2].length()).trim());
+                String lines[] = pdfFileInText.split("\\r?\\n", -1);
+
+                // Nome do Cooperado
+                conta.setNome(lines[7].trim());
+
+                // Detecta a linha do CEP
+                int cepIndex = -1;
+                Pattern cepPattern = Pattern.compile("\\d{5}-\\d{3}");
+                for (int i = 8; i < lines.length; i++) {
+                    if (cepPattern.matcher(lines[i]).find()) {
+                        cepIndex = i;
+                        break;
+                    }
+                }
+
+                // Normaliza para que o CEP fique sempre na posição 10
+                List<String> listaLinhas = new ArrayList<>(Arrays.asList(lines));
+
+                // Quantas linhas existem entre nome (7) e CEP
+                int entreNomeCep = cepIndex - 7 - 1;
+
+                // Se faltar linhas, insere vazios
+                if (entreNomeCep == 1) {
+                    listaLinhas.add(8, ""); // insere bairro vazio
+                } else if (entreNomeCep == 0) {
+                    listaLinhas.add(8, ""); // insere endereço vazio
+                    listaLinhas.add(9, ""); // insere bairro vazio
+                }
+
+                // Atualiza o array
+                lines = listaLinhas.toArray(new String[0]);
+
+//                for (int i = 0; i < 25; i++) {
+//                    System.out.println("[" + i + "] " + lines[i]);
+//                }
+
+                String endereco = lines[8].trim();
+                String bairro = lines[9].trim();
+                String enderecoFinal;
+                enderecoFinal = (endereco.isEmpty() && bairro.isEmpty()) ? null
+                        : (endereco.isEmpty() ? bairro
+                        : (bairro.isEmpty() ? endereco
+                        : endereco + " | " + bairro));
+                if (enderecoFinal != null) {
+                    enderecoFinal = enderecoFinal.toUpperCase();
+                }
+                conta.setEndereco(enderecoFinal);
+                conta.setBairro(enderecoFinal);
+
+                // Atribui valores de CEP e Cidade
+                String linhaCidadeCep = lines[10].trim();
+                conta.setCodigoMunicipio(linhaCidadeCep.substring(0, 9).trim());
+                conta.setMunicipio(linhaCidadeCep.substring(10).trim());
+
+                String linhaCpfMatricula = lines[18];
+                int inicioCpf = linhaCpfMatricula.indexOf("CPF:") + 5;
+                String depoisCpf = linhaCpfMatricula.substring(inicioCpf).trim();
+
+                if (depoisCpf.matches("\\d{3}\\.\\d{3}\\.\\d{3}-\\d{2}.*")) {
+                    String cpf = depoisCpf.substring(0, 14).trim();
+                    conta.setCpf(cpf);
+                    String restante = depoisCpf.substring(14).trim();
+                    String matricula = restante.split("\\s+")[0];
+                    conta.setMatricula(matricula);
+                } else {
+                    conta.setCpf(""); // ou null
+                    String matricula = depoisCpf.split("\\s+")[0];
+                    conta.setMatricula(matricula);
+                }
+
+                String linhaCnpj = lines[19];
+                int inicioCnpj = linhaCnpj.indexOf("CNPJ:") + 6;
+                String depoisCnpj = linhaCnpj.substring(inicioCnpj).trim();
+                if (depoisCnpj.matches("\\d{2}\\.\\d{3}\\.\\d{3}/\\d{4}-\\d{2}.*")) {
+                    String cnpj = depoisCnpj.substring(0, 18).trim();
+                    conta.setCnpj(cnpj);
+                } else {
+                    conta.setCnpj(null); // ou null, se preferir
+                }
+
+                String linhaResumo = lines[23];
+                conta.setDataReferencia(linhaResumo.substring(0, 7).trim());
+                conta.setDataVencimento(linhaResumo.substring(8, 18).trim());
+                conta.setValorTotal(linhaResumo.substring(18).trim());
+
+                String linhaNota = lines[15];
+                Pattern pattern = Pattern.compile("NOTA FISCAL N[º]?\\s*([0-9]+)");
+                Matcher matcher = pattern.matcher(linhaNota);
+                if (matcher.find()) {
+                    String numeroNota = matcher.group(1).replaceAll("[^0-9]", "").trim();
+                    conta.setNotaFiscal(numeroNota);
+                } else {
+                    conta.setNotaFiscal(null); // ou null, se preferir
+                }
+
+                linhaNota = lines[15];
+                int posNotaFiscal = linhaNota.indexOf("NOTA FISCAL");
+                if (posNotaFiscal != -1) {
+                    String antesNota = linhaNota.substring(0, posNotaFiscal).trim();
+                    Pattern cadastroPattern = Pattern.compile("(\\d{8})\\s*$");
+                    Matcher cadastroMatcher = cadastroPattern.matcher(antesNota);
+                    if (cadastroMatcher.find()) {
+                        String numeroCadastro = cadastroMatcher.group(1);
+                        int cadastroSemZeros = Integer.parseInt(numeroCadastro);
+                        conta.setCadastro(String.valueOf(cadastroSemZeros));
+                    } else {
+                        conta.setCadastro(null); // ou null
+                    }
+                }
+
+                conta.setDataHoraLancamento(LocalDateTime.now());
+
+//                System.out.println("==== LOG CONTA ====");
+//                System.out.println("Bairro: " + conta.getBairro());
+//                System.out.println("Cadastro: " + conta.getCadastro());
+//                System.out.println("CNPJ: " + conta.getCnpj());
+//                System.out.println("CEP: " + conta.getCodigoMunicipio());
+//                System.out.println("CPF: " + conta.getCpf());
+//                System.out.println("Data Lançamento: " + conta.getDataHoraLancamento());
+//                System.out.println("Referência: " + conta.getDataReferencia());
+//                System.out.println("Vencimento: " + conta.getDataVencimento());
+//                System.out.println("Endereço: " + conta.getEndereco());
+//                System.out.println("Matrícula: " + conta.getMatricula());
+//                System.out.println("Cidade: " + conta.getMunicipio());
+//                System.out.println("Nome: " + conta.getNome());
+//                System.out.println("Nota Fiscal: " + conta.getNotaFiscal());
+//                System.out.println("Valor Total: " + conta.getValorTotal());
+//                System.out.println("====================");
+
                 existente = contas.porNotaFiscal(conta.getNotaFiscal());
+
                 if (existente != null) {
                     listaAlerta.add("COOPERADO " + existente.getNome()
                             + " REFERENCIA " + existente.getDataReferencia()
                             + " JÁ FOI LANÇADA\r\n");
                     limpar();
                 } else {
-                    conta.setNome(lines[1].substring(0, lines[1].length() - 25).trim());
-                    conta.setBairro(lines[2].substring(0, lines[2].length() - 11).trim());
-                    conta.setEndereco(lines[3].substring(0, lines[3].length() - 26).trim());
-                    conta.setCodigoMunicipio(lines[4].substring(7, 11).trim());
-                    conta.setMunicipio(lines[4].substring(12, lines[4].length() - 17).trim());
-                    conta.setMatricula(lines[6].substring(45, 50).trim());
-                    int controle = 0;
-                    for (String line : lines) {
-                        controle++;
-                        if (line.equals("DADOS DA UNIDADE CONSUMIDORA DATAS DAS LEITURAS")) {
-                            int dados = controle;
-                            String linha = lines[dados++];
-                            linha = lines[dados++];
-                            if (linha.substring(linha.length() - 31, linha.length() - 16).trim().replaceAll(" ", "").length() == 14) {
-                                conta.setCpf(linha.substring(linha.length() - 31, linha.length() - 16).trim().replaceAll(" ", ""));
-                            }
-                            linha = lines[dados + 2];
-                            if (linha.substring(5, 23).trim().replaceAll(" ", "").length() == 18) {
-                                conta.setCnpj(linha.substring(5, 24).trim().replaceAll(" ", ""));
-                            }
-                        }
-                        if (line.equals("ATENDIMENTO CERPAL SEU CÓDIGO CONTA MÊS VENCIMENTO VALOR A PAGAR (R$)")) {
-                            String linha = lines[controle++];
-                            conta.setCadastro(linha.substring(16, 22).trim());
-                            conta.setDataReferencia(linha.substring(22, 29).trim());
-                            conta.setDataVencimento(linha.substring(30, 41).trim());
-                            conta.setValorTotal(linha.substring(41, linha.length()).trim());
-                            break;
-                        }
-                    }
                     conta.setArquivo(arquivo);
-                    conta.setDataHoraLancamento(LocalDateTime.now());
                     listaSucesso.add("COOPERADO " + conta.getNome()
                             + " REFERENCIA " + conta.getDataReferencia()
                             + " LANÇADA COM SUCESSO\r\n");
